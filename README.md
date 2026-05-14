@@ -124,9 +124,30 @@ In `--json` mode, errors are also reported as `{"schemaVersion":1,"error":{"code
 the CLI safely (non-interactive `--json` mode, default-to-private
 visibility, error handling).
 
-### Install the skill
+### Install the skill (recommended)
 
-Personal scope — available in every session:
+Use the [`skills`](https://www.npmjs.com/package/skills) CLI — it clones
+the repo, discovers the bundled `SKILL.md`, and registers it for you:
+
+```sh
+npx skills add -y -g https://github.com/ryoshin0830/ghnew
+```
+
+- `-y` / `--yes`: skip the interactive agent picker (avoids a known bug
+  in the picker when more than one target is detected).
+- `-g` / `--global`: install into `~/.claude/skills/` so the skill is
+  available in every session, not just the current project.
+
+After installing, restart Claude Code once so the new skill directory is
+registered. Subsequent edits to `SKILL.md` reload live.
+
+If you want the skill **only inside a specific project**, omit `-g` and
+run the command from that project's root — it will install under
+`.claude/skills/` of the current directory.
+
+### Manual install (no `skills` CLI)
+
+If you'd rather not run the `skills` CLI, clone the repo and symlink:
 
 ```sh
 ghq get https://github.com/ryoshin0830/ghnew
@@ -134,17 +155,6 @@ mkdir -p ~/.claude/skills
 ln -s "$(ghq list -e -p github.com/ryoshin0830/ghnew)/.claude/skills/ghnew" \
       ~/.claude/skills/ghnew
 ```
-
-Project scope — only inside this repo's clone:
-
-```sh
-# Already present at .claude/skills/ghnew/SKILL.md once you clone the repo;
-# Claude Code auto-discovers it for the project.
-```
-
-After installing the skill in personal scope, restart your Claude Code
-session once so the new skill directory is registered. Edits to
-`SKILL.md` itself reload live; new directories require a restart.
 
 ### Recommended agent call
 
