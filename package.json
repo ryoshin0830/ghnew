@@ -1,10 +1,10 @@
 {
   "name": "ghnew",
   "version": "0.1.0",
-  "description": "Create a GitHub repo, ghq-get it, and cd into it — in one shot.",
+  "description": "Create a GitHub repo, ghq-get it, and print the cd command — in one shot.",
   "type": "module",
   "bin": {
-    "ghnew": "./bin/ghnew.mjs"
+    "ghnew": "bin/ghnew.mjs"
   },
   "engines": {
     "node": ">=20.12.0"
