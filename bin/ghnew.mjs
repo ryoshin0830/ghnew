@@ -58,6 +58,24 @@ EXIT CODES
 
 // ── arg parsing ──────────────────────────────────────────────────────────────
 
+// Detect --json early so even parseArgs / uncaughtException failures can
+// produce a schema-compliant JSON error on stderr.
+const rawJson = process.argv.slice(2).includes('--json');
+
+function emitEarlyError(message, code = 'E_VALIDATION', exitCode = 1) {
+  if (rawJson) {
+    process.stderr.write(JSON.stringify({
+      schemaVersion: 1,
+      error: { code, message },
+      exitCode,
+    }) + '\n');
+  } else {
+    process.stderr.write(`ghnew: ${message}\n`);
+    process.stderr.write(`run \`ghnew --help\` for usage.\n`);
+  }
+  process.exit(exitCode);
+}
+
 let values, positionals;
 try {
   ({ values, positionals } = parseArgs({
@@ -78,9 +96,7 @@ try {
     allowPositionals: true,
   }));
 } catch (err) {
-  process.stderr.write(`ghnew: ${err.message}\n`);
-  process.stderr.write(`run \`ghnew --help\` for usage.\n`);
-  process.exit(1);
+  emitEarlyError(err.message);
 }
 
 if (values.help) {
@@ -147,8 +163,14 @@ function die(code, message) {
 // ── argument validation ──────────────────────────────────────────────────────
 
 if (values.remote) {
-  const m = values.remote.match(/^([^/]+)\/(.+)$/);
-  if (!m) die('E_VALIDATION', '--remote must be in HOST/LOGIN form');
+  const m = values.remote.match(/^([^/]+)\/([^/]+)$/);
+  if (!m) die('E_VALIDATION', '--remote must be in HOST/LOGIN form (no extra slashes)');
+  if (values.host && values.host !== m[1]) {
+    die('E_VALIDATION', `--remote host (${m[1]}) conflicts with --host (${values.host})`);
+  }
+  if (values.account && values.account !== m[2]) {
+    die('E_VALIDATION', `--remote login (${m[2]}) conflicts with --account (${values.account})`);
+  }
   values.host ??= m[1];
   values.account ??= m[2];
 }
@@ -161,7 +183,18 @@ if (values.json && values.quiet) {
   die('E_VALIDATION', '--json and --quiet are mutually exclusive');
 }
 
+if (positionals.length > 1) {
+  die('E_VALIDATION', `unexpected extra arguments: ${positionals.slice(1).join(' ')}`);
+}
+
 const argName = positionals[0];
+
+// Fast-fail: in --json or --quiet mode, the repo name MUST be provided as
+// a positional. Otherwise we'd run deps/auth checks before discovering the
+// missing arg, which violates the agent-facing contract.
+if ((values.json || values.quiet) && !argName) {
+  die('E_VALIDATION', 'repository name is required as positional argument in --json/--quiet mode');
+}
 
 // ── non-interactive mode determination ───────────────────────────────────────
 
@@ -198,9 +231,9 @@ async function ensureTool(cmd) {
     const ok = await confirm({
       message: `'${cmd}' not found. Install via 'brew install ${cmd}'?`,
       default: true,
-    });
+    }, { output: process.stderr });
     if (!ok) die('E_DEPS', `Aborted. See ${INSTALL_URLS[cmd]}`);
-    const r = spawnSync('brew', ['install', cmd], { stdio: 'inherit' });
+    const r = spawnSync('brew', ['install', cmd], { stdio: ['inherit', 2, 'inherit'] });
     if (r.status !== 0) die('E_DEPS', `brew install ${cmd} failed`);
   } else {
     die('E_DEPS', `'${cmd}' not found and Homebrew unavailable. See ${INSTALL_URLS[cmd]}`);
@@ -233,9 +266,9 @@ async function ensureGhLoggedIn() {
   const ok = await confirm({
     message: "gh is not logged in. Run 'gh auth login' now?",
     default: true,
-  });
+  }, { output: process.stderr });
   if (!ok) die('E_AUTH', 'Aborted — run `gh auth login` and try again.');
-  const r = spawnSync('gh', ['auth', 'login'], { stdio: 'inherit' });
+  const r = spawnSync('gh', ['auth', 'login'], { stdio: ['inherit', 2, 'inherit'] });
   if (r.status !== 0) die('E_AUTH', '`gh auth login` did not complete successfully');
   accounts = readHosts();
   if (accounts.length === 0) die('E_AUTH', 'Still no authenticated accounts after login');
@@ -285,7 +318,7 @@ async function pickAccount(accounts) {
       name: `${a.host} / ${a.login}  (${a.gitProtocol})`,
       value: a,
     })),
-  });
+  }, { output: process.stderr });
 }
 
 // ── width / box ──────────────────────────────────────────────────────────────
@@ -333,17 +366,14 @@ function renderBox(cdCommand) {
   const lead = '─';
   const top = `╭─${titleRaw}${lead.repeat(Math.max(0, inner - titleW - 1))}╮`;
   const empty = `│${' '.repeat(inner)}│`;
-  const mid = `│  ${cdCommand}${' '.repeat(Math.max(0, inner - strWidth(cdCommand) - 2))}│`;
   const bot = `╰${'─'.repeat(inner)}╯`;
-  // dim borders only; keep cd command at default color via cyan inside mid
-  const dimmed = (s) => dim(s);
-  const cyanCmd = (s) => s.replace(cdCommand, cyan(cdCommand));
+  const pad = ' '.repeat(Math.max(0, inner - strWidth(cdCommand) - 2));
   return [
-    dimmed(top),
-    dimmed(empty),
-    dimmed(`│  `) + cyan(cdCommand) + dimmed(`${' '.repeat(Math.max(0, inner - strWidth(cdCommand) - 2))}│`),
-    dimmed(empty),
-    dimmed(bot),
+    dim(top),
+    dim(empty),
+    dim('│  ') + cyan(cdCommand) + dim(pad + '│'),
+    dim(empty),
+    dim(bot),
   ].join('\n');
 }
 
@@ -406,34 +436,43 @@ for (const sig of ['SIGTERM', 'SIGHUP']) {
 }
 process.on('uncaughtException', (err) => {
   disengageRawMode(); restoreCursor();
-  stderr.write(`${red('ghnew:')} ${err?.stack ?? err}\n`);
+  if (rawJson) {
+    stderr.write(JSON.stringify({
+      schemaVersion: 1,
+      error: { code: 'E_VALIDATION', message: String(err?.message ?? err) },
+      exitCode: 1,
+    }) + '\n');
+  } else {
+    stderr.write(`${red('ghnew:')} ${err?.stack ?? err}\n`);
+  }
   process.exit(1);
 });
 
 async function waitForKey() {
-  return new Promise((resolve) => {
-    process.stdin.removeAllListeners('data');
-    process.stdin.removeAllListeners('keypress');
-    try { process.stdin.setRawMode(true); rawModeEngaged = true; } catch { /* ignore */ }
-    process.stdin.resume();
-    const handler = (buf) => {
-      process.stdin.removeListener('data', handler);
-      disengageRawMode();
-      process.stdin.pause();
-      resolve(buf);
-    };
-    process.stdin.on('data', handler);
-  });
+  process.stdin.removeAllListeners('data');
+  process.stdin.removeAllListeners('keypress');
+  try {
+    process.stdin.setRawMode(true);
+    rawModeEngaged = true;
+  } catch { /* setRawMode throws on non-TTY; let the keypress fall through */ }
+  process.stdin.resume();
+  try {
+    return await new Promise((resolve) => {
+      const handler = (buf) => {
+        process.stdin.removeListener('data', handler);
+        resolve(buf);
+      };
+      process.stdin.on('data', handler);
+    });
+  } finally {
+    disengageRawMode();
+    process.stdin.pause();
+  }
 }
 
 // ── main flow ────────────────────────────────────────────────────────────────
 
 async function main() {
-  if (!stdinTTY && !isNonInteractive) {
-    die('E_VALIDATION',
-      'non-TTY stdin; provide --remote and <name> (and optionally --json/--quiet)');
-  }
-
   await ensureTool('gh');
   await ensureTool('ghq');
   const accounts = await ensureGhLoggedIn();
@@ -445,7 +484,7 @@ async function main() {
     name = (await input({
       message: 'repository name:',
       validate: (v) => (v.trim() ? true : 'repository name is required'),
-    })).trim();
+    }, { output: process.stderr })).trim();
   }
 
   const visibility = values.public ? 'public' : values.internal ? 'internal' : 'private';
@@ -458,7 +497,7 @@ async function main() {
   if (values.description) createArgs.push('--description', values.description);
   const createRes = spawnSync('gh', createArgs, {
     env: { ...process.env, GH_HOST: account.host },
-    stdio: isPretty ? 'inherit' : ['ignore', 'ignore', 'inherit'],
+    stdio: isPretty ? ['inherit', 2, 'inherit'] : ['inherit', 'ignore', 'ignore'],
   });
   if (createRes.signal === 'SIGINT') process.exit(130);
   if (createRes.status !== 0) die('E_GH_CREATE', 'gh repo create failed');
@@ -471,7 +510,7 @@ async function main() {
       : `https://${account.host}/${account.login}/${name}`;
   log(`${dim('│')} cloning via ${dim(account.gitProtocol)}…`);
   const getRes = spawnSync('ghq', ['get', cloneUrl], {
-    stdio: isPretty ? 'inherit' : ['ignore', 'ignore', 'inherit'],
+    stdio: isPretty ? ['inherit', 2, 'inherit'] : ['inherit', 'ignore', 'ignore'],
   });
   if (getRes.signal === 'SIGINT') process.exit(130);
   if (getRes.status !== 0) die('E_GHQ_GET', `ghq get failed for ${cloneUrl}`);
@@ -509,8 +548,11 @@ async function main() {
   stderr.write('\n');
   stderr.write(renderBox(cdCommand) + '\n');
 
+  // The cd box and the keypress hint are emitted to stderr, so the keypress
+  // phase only makes sense if stderr is a TTY (where the user can see the
+  // prompt) AND stdin is a TTY (where they can press a key).
   const canPrompt =
-    !values['no-copy-prompt'] && stdinTTY && stdoutTTY;
+    !values['no-copy-prompt'] && stdinTTY && stderrTTY;
 
   if (!canPrompt) return;
 
