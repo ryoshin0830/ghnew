@@ -1,0 +1,40 @@
+{
+  "name": "ghnew",
+  "version": "0.1.0",
+  "description": "Create a GitHub repo, ghq-get it, and cd into it — in one shot.",
+  "type": "module",
+  "bin": {
+    "ghnew": "./bin/ghnew.mjs"
+  },
+  "engines": {
+    "node": ">=20.12.0"
+  },
+  "dependencies": {
+    "@inquirer/prompts": "^7.0.0"
+  },
+  "files": [
+    "bin",
+    "LICENSE",
+    "README.md"
+  ],
+  "keywords": [
+    "gh",
+    "ghq",
+    "github",
+    "cli",
+    "scaffold"
+  ],
+  "license": "MIT",
+  "author": "ryoshin0830",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ryoshin0830/ghnew.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ryoshin0830/ghnew/issues"
+  },
+  "homepage": "https://github.com/ryoshin0830/ghnew#readme",
+  "scripts": {
+    "prepublishOnly": "npm pack --dry-run && node bin/ghnew.mjs --help"
+  }
+}
