@@ -107,7 +107,51 @@ the right `E_*` code instead.
 `uncaughtException`, and inside `try/finally`. Cursor restore (`\x1b[?25h`)
 is guarded by `stderr.isTTY` to prevent escape bytes leaking into files.
 
-### I7. Engines
+### I7. The selected account, not the host's active one
+
+`GH_HOST` pins the *host*, never the account. When a host has several logins,
+`gh` authenticates as the one with `active: true` — so `ghnew` resolves the
+chosen account's token with `gh auth token --hostname <h> --user <l>` and
+passes `GH_TOKEN` (plus `GH_ENTERPRISE_TOKEN` off github.com) to **every**
+child, `ghq get` included (over HTTPS git calls `gh auth git-credential`).
+
+Drop this and picking a non-active login silently acts as the wrong user; for
+an Enterprise Managed User it surfaces as `HTTP 404 …/users/<login>`, because
+EMU profiles are invisible to tokens from outside the enterprise.
+
+If the token can't be read (gh < 2.40 has no `--user`): active account →
+proceed unchanged, otherwise `die('E_AUTH', …)` pointing at `gh auth switch`.
+Never write the token to stdout, stderr, or an error message.
+
+### I8. The child's GitHub credentials are exactly what ghnew decided
+
+`accountCredentials()` returns the **complete** child env, and deletes every
+variable in `TOKEN_VARS` (`GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`,
+`GITHUB_ENTERPRISE_TOKEN`) before setting what it resolved — including on the
+active-account fallback, which sets none.
+
+`gh` prefers an environment token over the keyring, so an ambient `GH_TOKEN`
+in the caller's shell is I7's bug from a second source: gh would act as
+whoever exported it, no matter which account the user picked.
+
+Two consequences elsewhere:
+
+- `readHosts()` drops entries with an empty `login`. An ambient `GH_TOKEN`
+  makes `gh auth status` report a nameless `active: true` account
+  (`tokenSource: "GH_TOKEN"`) that can never own a repo.
+- With *only* such a token configured, `ensureGhLoggedIn()` dies `E_AUTH`
+  naming the variable — `gh auth login` alone is the wrong advice there.
+
+### I9. A failed `gh repo create` names the identity it ran as
+
+gh's own error doesn't say which account it authenticated as, which is the
+first question a 404 raises. The `E_GH_CREATE` message carries `<login>/<name>`,
+`<host>/<login>`, whether the selected account's token was injected or the
+host's active credentials were used, and what a `404 …/users/<login>` implies.
+It stays a single `die()` string so `--json` keeps one message field (I2), and
+gh's own stderr still passes through untouched (I4).
+
+### I10. Engines
 
 `engines.node >= 20.12.0` because we depend on `node:util` `parseArgs` and
 `@inquirer/prompts` v7. Do not lower.
@@ -159,7 +203,9 @@ to catch broken shebangs and missing files before they hit the registry.
 
 ## Manual test matrix
 
-After non-trivial changes, run these against the local `npm link`'d binary:
+`npm test` covers account/credential selection with `gh`/`ghq` shims on PATH
+(`test/account-selection.test.mjs`, `node:test`, no network, no repos created).
+Run it first; then run these against the local `npm link`'d binary:
 
 | Scenario                     | Command                                                        | Expect                                   |
 |------------------------------|----------------------------------------------------------------|------------------------------------------|
@@ -177,7 +223,10 @@ After non-trivial changes, run these against the local `npm link`'d binary:
 | Keypress copy                | `ghnew foo`, press `c`                                         | clipboard contains `cd "<path>"` no `\n` |
 | Keypress dismiss             | `ghnew foo`, press space                                       | exits 0, nothing in clipboard            |
 | Ctrl-C during keypress       | `ghnew foo`, Ctrl-C                                            | exit 130, cursor restored                |
-| Bare `npm pack --dry-run`    | inside the repo                                                | no `.claude/`, `CLAUDE.md`, `.git/`      |
+| Multi-account host           | `ghnew --remote github.com/<non-active-login> --json foo`      | repo owned by that login (see I7)        |
+| GHEC / EMU login             | `ghnew --remote github.com/<emu-login> --json foo`             | created as the EMU user, no `404 /users/` |
+| Ambient token ignored        | `GH_TOKEN=bogus ghnew --remote github.com/<login> --json foo`  | succeeds; the stale token is not used (I8) |
+| Bare `npm pack --dry-run`    | inside the repo                                                | no `.claude/`, `CLAUDE.md`, `test/`, `.git/` |
 
 ---
 
@@ -190,8 +239,8 @@ After non-trivial changes, run these against the local `npm link`'d binary:
   user-visible interface change; document it in the commit.
 - `README.md` — end-user docs.
 
-No tests under `__tests__/` yet; the test plan above is the contract. If
-adding tests, prefer `node:test` (zero new deps).
+- `test/*.test.mjs` — `node:test`, zero new deps, `npm test`. Everything else
+  in the matrix above is still manual.
 
 ---
 

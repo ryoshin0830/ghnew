@@ -240,6 +240,12 @@ async function ensureTool(cmd) {
   }
 }
 
+// Every environment variable `gh` reads as a GitHub credential. ghnew decides
+// all of them for its children; see accountCredentials().
+const TOKEN_VARS = [
+  'GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN',
+];
+
 function readHosts() {
   const r = spawnSync('gh', ['auth', 'status', '--json', 'hosts'], {
     encoding: 'utf8',
@@ -248,11 +254,17 @@ function readHosts() {
   try {
     const { hosts } = JSON.parse(r.stdout);
     return Object.entries(hosts ?? {}).flatMap(([host, arr]) =>
-      arr.map(({ login, gitProtocol }) => ({
-        host,
-        login,
-        gitProtocol: gitProtocol || 'https',
-      })),
+      arr
+        // With an ambient GH_TOKEN, gh reports an extra nameless account
+        // (login: "", active: true, tokenSource: "GH_TOKEN"). It can't own a
+        // repo, so it must never reach the picker or an "Available:" list.
+        .filter(({ login }) => !!login)
+        .map(({ login, gitProtocol, active }) => ({
+          host,
+          login,
+          gitProtocol: gitProtocol || 'https',
+          active: !!active,
+        })),
     );
   } catch {
     return [];
@@ -262,6 +274,14 @@ function readHosts() {
 async function ensureGhLoggedIn() {
   let accounts = readHosts();
   if (accounts.length > 0) return accounts;
+  // Distinguish "no credentials at all" from "only an anonymous env token",
+  // where `gh auth login` alone is the wrong advice.
+  const envVar = TOKEN_VARS.find((v) => process.env[v]);
+  if (envVar) {
+    die('E_AUTH',
+      `only an environment token (${envVar}) is configured; ghnew needs a named ` +
+      'account to own the repo. Run `gh auth login`, or unset that variable.');
+  }
   if (isNonInteractive) die('E_AUTH', 'gh not authenticated. Run `gh auth login` first.');
   const ok = await confirm({
     message: "gh is not logged in. Run 'gh auth login' now?",
@@ -319,6 +339,52 @@ async function pickAccount(accounts) {
       value: a,
     })),
   }, { output: process.stderr });
+}
+
+// ── credentials for the selected account ─────────────────────────────────────
+
+// GH_HOST picks the host, not the account: with several logins on one host
+// `gh` always uses that host's *active* account. Selecting a non-active login
+// therefore ran every API call as the wrong identity — and for an Enterprise
+// Managed User the failure looks like `HTTP 404 …/users/<login>`, because EMU
+// profiles are invisible to tokens from outside the enterprise. So resolve the
+// chosen account's own token and hand it to the child processes.
+//
+// The returned env is the *complete* child environment: the caller's ambient
+// GH_TOKEN/GITHUB_TOKEN are dropped first, because gh prefers an environment
+// token over the keyring and would otherwise authenticate as whoever exported
+// it — the same wrong-identity bug from a different source.
+//
+// `injected` reports whether the selected account's own token was supplied, so
+// a later failure can say which credentials gh actually used.
+function accountCredentials(account) {
+  const env = { ...process.env, GH_HOST: account.host };
+  for (const v of TOKEN_VARS) delete env[v];
+
+  const r = spawnSync(
+    'gh',
+    ['auth', 'token', '--hostname', account.host, '--user', account.login],
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+  );
+  const token = r.status === 0 ? (r.stdout ?? '').trim() : '';
+
+  if (!token) {
+    // gh < 2.40 has no `--user`, and keyring reads can fail. The active
+    // account is what gh would pick anyway, so it needs no injection;
+    // anything else would silently act as the wrong user.
+    if (account.active) return { env, injected: false };
+    die('E_AUTH',
+      `could not read the token for ${account.host}/${account.login}; ` +
+      `gh would fall back to that host's active account. Run ` +
+      `\`gh auth switch --hostname ${account.host} --user ${account.login}\`, ` +
+      'or upgrade gh to >= 2.40.');
+  }
+
+  // github.com reads GH_TOKEN; GHES reads GH_ENTERPRISE_TOKEN. Set both off
+  // github.com so *.ghe.com tenancies are covered too.
+  env.GH_TOKEN = token;
+  if (account.host !== 'github.com') env.GH_ENTERPRISE_TOKEN = token;
+  return { env, injected: true };
 }
 
 // ── width / box ──────────────────────────────────────────────────────────────
@@ -491,16 +557,28 @@ async function main() {
   const visFlag = `--${visibility}`;
 
   log(`${dim('┌')} ${bold('ghnew')}`);
-  log(`${dim('│')} creating ${visibility} repo on ${cyan(account.host)}…`);
+  log(`${dim('│')} creating ${visibility} repo as ${cyan(`${account.host}/${account.login}`)}…`);
+
+  // Every child runs as the selected account, not the host's active one.
+  const { env: childEnv, injected } = accountCredentials(account);
 
   const createArgs = ['repo', 'create', `${account.login}/${name}`, visFlag, '--add-readme'];
   if (values.description) createArgs.push('--description', values.description);
   const createRes = spawnSync('gh', createArgs, {
-    env: { ...process.env, GH_HOST: account.host },
+    env: childEnv,
     stdio: isPretty ? ['inherit', 2, 'inherit'] : ['inherit', 'ignore', 'ignore'],
   });
   if (createRes.signal === 'SIGINT') process.exit(130);
-  if (createRes.status !== 0) die('E_GH_CREATE', 'gh repo create failed');
+  if (createRes.status !== 0) {
+    // Name the identity: gh's own error omits it, and "who did this run as?"
+    // is the first question every create failure raises.
+    die('E_GH_CREATE',
+      `gh repo create failed for ${account.login}/${name} — gh ran as ` +
+      `${account.host}/${account.login} using ` +
+      `${injected ? "that account's token" : "the host's active credentials"}. ` +
+      `An 'HTTP 404 …/users/${account.login}' above means gh authenticated as a ` +
+      'different account; check `gh auth status`.');
+  }
 
   log(`${dim('│')} ${green('✓')} created ${cyan(`${account.login}/${name}`)}`);
 
@@ -510,6 +588,9 @@ async function main() {
       : `https://${account.host}/${account.login}/${name}`;
   log(`${dim('│')} cloning via ${dim(account.gitProtocol)}…`);
   const getRes = spawnSync('ghq', ['get', cloneUrl], {
+    // Same env: over HTTPS git shells out to `gh auth git-credential`, which
+    // would otherwise authenticate as the host's active account.
+    env: childEnv,
     stdio: isPretty ? ['inherit', 2, 'inherit'] : ['inherit', 'ignore', 'ignore'],
   });
   if (getRes.signal === 'SIGINT') process.exit(130);
