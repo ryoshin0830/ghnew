@@ -2,9 +2,15 @@
 import { spawnSync } from 'node:child_process';
 import { parseArgs } from 'node:util';
 import { Buffer } from 'node:buffer';
+import { readFileSync } from 'node:fs';
 import { input, select, confirm } from '@inquirer/prompts';
 
-const VERSION = '0.2.0';
+// Read from package.json rather than a hand-maintained constant: `npm version`
+// only bumps the manifest, so a literal here silently drifts and `--version`
+// then reports a build the user isn't running.
+const VERSION = JSON.parse(
+  readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+).version;
 const SCHEMA_VERSION = 1;
 
 const HELP = `ghnew ${VERSION} — create a GitHub repo, ghq-get it, offer to copy the cd command.

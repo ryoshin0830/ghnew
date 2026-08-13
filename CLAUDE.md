@@ -187,6 +187,11 @@ npm version patch     # 0.x.y → 0.x.(y+1)   bug fix
 npm version minor     # 0.x.y → 0.(x+1).0   feature
 npm version major     # only meaningful from 1.0.0 onwards
 
+# `bin/ghnew.mjs` reads its version from package.json, so this is the only
+# place a release number lives. Never reintroduce a `const VERSION = '…'`
+# literal: `npm version` doesn't touch the source, so it silently drifts and
+# `--version` then names a build the user isn't running.
+
 # 4. Push commit + tag, then publish:
 git push --follow-tags
 npm publish           # prompts for passkey/OTP via the npm web auth flow
