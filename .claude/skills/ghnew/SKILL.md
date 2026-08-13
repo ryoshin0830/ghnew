@@ -122,6 +122,11 @@ unknown fields — the schema allows additive growth.
 | `E_GHQ_GET`     | 1    | `ghq get` failed                                          |
 | `E_INTERRUPTED` | 130  | Ctrl-C                                                    |
 
+stderr *carries* that line; it is not exclusively JSON. Node warnings and
+`gh`/`ghq` diagnostics share the stream, so select the line starting with
+`{` — `2>&1 >/dev/null | grep -m1 '^{' | jq -r .error.code` — rather than
+piping the whole stream to `jq`.
+
 On `E_GH_CREATE` because of a duplicate name, tell the user — do NOT
 auto-retry with a mutated name.
 

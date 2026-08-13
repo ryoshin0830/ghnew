@@ -68,6 +68,11 @@ Error JSON (stderr, exit ≠ 0):
 
 Adding new fields is fine. Removing or renaming requires a `schemaVersion` bump.
 
+stderr *carries* the error line; it is not exclusively JSON. Node warnings
+(`NO_COLOR` + `FORCE_COLOR` together, for one) and child diagnostics share the
+stream. Consumers — including our own tests — must select the line starting
+with `{`, never parse the whole stream.
+
 ### I3. Exit codes
 
 | Code | Constant         | Meaning                                              |

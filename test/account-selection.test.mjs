@@ -107,6 +107,10 @@ function runGhnew(args, extraEnv = {}) {
   for (const k of ['GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN', 'GH_HOST']) {
     delete env[k];
   }
+  // We pass NO_COLOR below; npm sets FORCE_COLOR for lifecycle scripts on a
+  // TTY, and node warns to stderr when both are set. That warning lands on
+  // the stream we assert against, so drop the conflicting vars.
+  for (const k of ['FORCE_COLOR', 'CLICOLOR_FORCE']) delete env[k];
   const r = spawnSync(process.execPath, [BIN, ...args], {
     encoding: 'utf8',
     env: {
@@ -126,6 +130,16 @@ function runGhnew(args, extraEnv = {}) {
 
 const findCall = (calls, bin, ...head) =>
   calls.find((c) => c.bin === bin && head.every((h, i) => c.args[i] === h));
+
+// I2 says stderr *carries* the error JSON, not that it is the only thing on
+// the stream: node warnings and anything a child writes can share it. Pick the
+// JSON line, and show the raw stream when there isn't one — a bare
+// `Unexpected token '('` says nothing about what actually polluted stderr.
+function errJson(stderr) {
+  const line = stderr.split('\n').find((l) => l.trimStart().startsWith('{'));
+  assert.ok(line, `no JSON error line on stderr. Raw stderr:\n${stderr}`);
+  return JSON.parse(line);
+}
 
 test('non-active github.com account: gh repo create runs with that account token', () => {
   const r = runGhnew(['--json', '--remote', 'github.com/monalisa_acme', 'my-app']);
@@ -182,7 +196,7 @@ test('non-active account + old gh: actionable E_AUTH instead of a confusing 404'
   );
   assert.equal(r.status, 2);
   assert.equal(r.stdout, '');
-  const err = JSON.parse(r.stderr);
+  const err = errJson(r.stderr);
   assert.equal(err.error.code, 'E_AUTH');
   assert.match(err.error.message, /gh auth switch/);
   assert.equal(findCall(r.calls, 'gh', 'repo', 'create'), undefined, 'must not attempt the create');
@@ -226,7 +240,7 @@ test('gh repo create failure names the identity it ran as', () => {
     { GHNEW_TEST_CREATE_FAIL: '1' },
   );
   assert.equal(r.status, 1);
-  const err = JSON.parse(r.stderr);
+  const err = errJson(r.stderr);
   assert.equal(err.error.code, 'E_GH_CREATE');
   assert.match(err.error.message, /monalisa_acme\/my-app/, 'names the repo it tried to create');
   assert.match(err.error.message, /github\.com\/monalisa_acme/, 'names the account gh ran as');
@@ -251,7 +265,7 @@ test('nameless environment-token account never reaches the picker', () => {
     { GHNEW_TEST_HOSTS: JSON.stringify(hosts), GH_TOKEN: 'STALE' },
   );
   assert.equal(r.status, 2);
-  const err = JSON.parse(r.stderr);
+  const err = errJson(r.stderr);
   assert.equal(err.error.code, 'E_AUTH');
   assert.match(err.error.message, /github\.com\/octocat/);
   assert.doesNotMatch(
@@ -271,7 +285,7 @@ test('environment token alone is a named-account error, not "not logged in"', ()
     { GHNEW_TEST_HOSTS: JSON.stringify(hosts), GH_TOKEN: 'STALE' },
   );
   assert.equal(r.status, 2);
-  const err = JSON.parse(r.stderr);
+  const err = errJson(r.stderr);
   assert.equal(err.error.code, 'E_AUTH');
   assert.match(err.error.message, /GH_TOKEN/, 'points at the environment token, not `gh auth login` alone');
 });
