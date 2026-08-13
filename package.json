@@ -35,6 +35,7 @@
   },
   "homepage": "https://github.com/ryoshin0830/ghnew#readme",
   "scripts": {
-    "prepublishOnly": "npm pack --dry-run && node bin/ghnew.mjs --help"
+    "test": "node --test test/*.test.mjs",
+    "prepublishOnly": "npm test && npm pack --dry-run && node bin/ghnew.mjs --help"
   }
 }
