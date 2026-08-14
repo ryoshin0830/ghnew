@@ -50,7 +50,7 @@ SHELL INTEGRATION
   *print* where the new repo landed. Add this to ~/.zshrc and it moves the shell
   for you instead, exactly like ghqcd / gwqcd / gwqpull / gwqadd:
 
-    eval "$(ghnew --init zsh)"
+    eval "$(command ghnew --init zsh)"
 
   Without it, ghnew falls back to the copyable box below.
 
@@ -214,7 +214,7 @@ function shellInit(shell, fnName) {
 
   if (shell === 'zsh') {
     return `# ${PKG} ${VERSION} — zsh integration
-# Add to ~/.zshrc:  eval "$(${PKG} --init zsh)"
+# Add to ~/.zshrc:  eval "$(command ${PKG} --init zsh)"
 
 __${slug}_fallback=${shq(SELF)}
 
@@ -252,7 +252,7 @@ ${fnName}() {
 
   if (shell === 'bash') {
     return `# ${PKG} ${VERSION} — bash integration
-# Add to ~/.bashrc:  eval "$(${PKG} --init bash)"
+# Add to ~/.bashrc:  eval "$(command ${PKG} --init bash)"
 
 __${slug}_fallback=${shq(SELF)}
 
@@ -289,7 +289,7 @@ ${fnName}() {
 
   if (shell === 'fish') {
     return `# ${PKG} ${VERSION} — fish integration
-# Add to ~/.config/fish/config.fish:  ${PKG} --init fish | source
+# Add to ~/.config/fish/config.fish:  command ${PKG} --init fish | source
 
 set -g __${slug}_fallback ${fishq(SELF)}
 
@@ -376,11 +376,18 @@ if (positionals.length > 1) {
 
 const argName = positionals[0];
 
-// Fast-fail: in --json or --quiet mode, the repo name MUST be provided as
-// a positional. Otherwise we'd run deps/auth checks before discovering the
-// missing arg, which violates the agent-facing contract.
-if ((values.json || values.quiet) && !argName) {
-  die('E_VALIDATION', 'repository name is required as positional argument in --json/--quiet mode');
+// Fast-fail: in --json mode the repo name MUST be a positional. Otherwise we'd
+// run deps/auth checks before discovering the missing arg, which violates the
+// agent-facing contract.
+//
+// --quiet is deliberately excluded, and used to be here. The shell function
+// runs `ghnew --quiet "$@"`, so a bare `ghnew` refused to start — "repository
+// name is required as positional argument in --json/--quiet mode" — while
+// `npx ghnew` (the binary, no --quiet) happily prompted. Reported exactly that
+// way. Without a TTY the prompt site still dies with the same error, because
+// isNonInteractive covers !stdinTTY.
+if (values.json && !argName) {
+  die('E_VALIDATION', 'repository name is required as positional argument in --json mode');
 }
 
 // ── non-interactive mode determination ───────────────────────────────────────

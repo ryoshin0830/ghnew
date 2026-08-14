@@ -130,6 +130,22 @@ into a help page, so the tests install the function and run it for real.
 
 The copyable box stays for `npx ghnew` used without the integration.
 
+### I8c. The install snippet must say `command`
+
+The emitted function shares its name with the binary, so `eval "$(ghnew --init
+zsh)"` in `~/.zshrc` resolves to the *function* on every re-source after the
+first. A stale function then captures the `--init` output and hands it to `cd`:
+
+    gwqcd:cd:5: no such file or directory: # gwqcd 0.2.1 — zsh integration\n…
+
+Reported by a user running `source ~/.zshrc` after an upgrade. `command` skips
+functions and goes to PATH, which makes re-sourcing idempotent no matter what is
+already defined. The npx form (`eval "$(npx -y ghnew --init zsh)"`) never had the
+problem, because npx is not the function.
+
+The generated snippet's own header comment shows the `command` form too — it is
+the line people copy.
+
 ### I6. Raw mode cleanup
 
 `process.stdin.setRawMode(true)` is guarded by both `stdin.isTTY` and

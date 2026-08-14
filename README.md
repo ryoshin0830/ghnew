@@ -56,14 +56,18 @@ command to paste:
 
 ```sh
 # zsh  — ~/.zshrc
-eval "$(ghnew --init zsh)"
+eval "$(command ghnew --init zsh)"
 
 # bash — ~/.bashrc
-eval "$(ghnew --init bash)"
+eval "$(command ghnew --init bash)"
 
 # fish — ~/.config/fish/config.fish
-ghnew --init fish | source
+command ghnew --init fish | source
 ```
+
+`command` matters: ghnew defines a shell function with its own name, so on a
+second `source ~/.zshrc` the *function* would answer, capture the `--init` output
+and try to `cd` into it. `command` skips functions and goes to the binary.
 
 Or run without installing (slower on first run because npx cold-starts):
 

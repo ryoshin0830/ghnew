@@ -351,3 +351,28 @@ test('--quiet no longer forbids prompting — only --json and a missing TTY do',
   assert.match(src, /explicitNonInteractive \|\| fullySpecified \|\| !stdinTTY/,
     'no TTY must still forbid prompting');
 });
+
+test('the emitted snippet tells people to use `command`', () => {
+  // `eval "$(<pkg> --init zsh)"` in ~/.zshrc resolves to the *function* on every
+  // re-source after the first, and a stale function captures this very output
+  // and hands it to cd. `command` skips functions. The header comment is the
+  // line people copy, so it has to be the correct one.
+  for (const shell of ['zsh', 'bash']) {
+    const out = initFor(shell).stdout;
+    assert.match(out, /eval "\$\(command ghnew --init (zsh|bash)\)"/,
+      `${shell} header must recommend the command form`);
+  }
+  assert.match(initFor('fish').stdout, /command ghnew --init fish \| source/);
+});
+
+test('re-sourcing is idempotent even with a stale function defined', (t) => {
+  if (spawnSync('zsh', ['-c', 'true'], { stdio: 'ignore' }).error) return t.skip('zsh missing');
+  const init = initFor('zsh').stdout;
+  // A pre-`command` function: captures stdout and cds into it, whatever it is.
+  const stale = `ghnew() { local d; d=$(echo stale) || return $?; builtin cd -- "$d"; }`;
+  const script = [stale, init, 'ghnew --version'].join('\n');
+  const r = spawnSync('zsh', ['-c', script], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /^ghnew \d+\.\d+\.\d+/m, 'the new function must have replaced the stale one');
+  assert.doesNotMatch(r.stderr, /cd:|no such file/);
+});
