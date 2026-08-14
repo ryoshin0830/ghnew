@@ -1,6 +1,6 @@
 {
   "name": "ghnew",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Create a GitHub repo, ghq-get it, and print the cd command — in one shot.",
   "type": "module",
   "bin": {
