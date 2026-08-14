@@ -87,23 +87,48 @@ with `{`, never parse the whole stream.
 
 ### I4. Subprocess stdio
 
-All child processes (`gh`, `ghq`, `brew`) use `stdio: 'inherit'` in pretty
-mode so their TTY-aware output lands on the user's terminal. In `--json` and
-`--quiet` modes child stdout is silenced (`'ignore'`) and only stderr
-inherits — so subprocess noise never contaminates our stdout contract.
+Child processes (`gh`, `ghq`, `brew`) get `stdio: ['inherit', 2, 'inherit']` —
+fd 1 folded onto **our stderr** — so their output reaches the terminal without
+ever touching our stdout. Only `--json` silences them (`'ignore'`).
+
+`--quiet` narrates too, for the same reason `gwqpull` does: it is the shell
+function's mode, creating and cloning a repo takes seconds, and a silent wait
+reads as a hang.
 
 ### I5. Non-interactive determination
 
 `isNonInteractive` is decided once at startup and gates every `@inquirer`
 prompt afterward. Triggers:
 
-- `--json` or `--quiet`
+- `--json`
 - `name + host + account` all provided
 - `process.stdin.isTTY` is falsy
 
 If any of those is true, the code path MUST NOT call `confirm`/`input`/
 `select`. Each prompt site has a non-interactive branch that `die()`s with
 the right `E_*` code instead.
+
+**`--quiet` is deliberately not a trigger, and used to be.** That made the shell
+integration impossible: the emitted function runs `ghnew --quiet "$@"`, so on a
+machine with more than one authenticated gh account it died with "multiple
+authenticated accounts; specify --remote" instead of asking. Every prompt already
+writes to stderr (`{ output: process.stderr }`), so prompting never threatened
+the stdout contract. `--json` and a missing TTY are what actually protect scripts
+and agents, and both still do.
+
+### I5b. The emitted function must not capture output that is not a path
+
+`--init <shell>` emits a shell function so ghnew can move the shell instead of
+printing a box to paste — the same contract as `ghqcd`, `gwqcd`, `gwqpull` and
+`gwqadd`, resolved the same way (PATH → the baked script path → `npx -y`).
+
+Every flag whose result goes to stdout must pass through uncaptured: `-h`,
+`--help`, `-V`, `--version`, `--init`, `--json`. The function adds `--quiet`, so
+`--json` would additionally collide with it. This shipped broken in all four
+sibling packages first; `zsh -n` is perfectly happy with a function that cds
+into a help page, so the tests install the function and run it for real.
+
+The copyable box stays for `npx ghnew` used without the integration.
 
 ### I6. Raw mode cleanup
 
@@ -256,7 +281,9 @@ Run it first; then run these against the local `npm link`'d binary:
 
 ## Things that are intentionally NOT here
 
-- **Subcommands.** `ghnew` stays flat. If `ghnew clone <url>` or
+- **Subcommands.** `ghnew` stays flat. `--init` is a flag, not a subcommand —
+  the whole family spells it that way, because `gwqpull init zsh` would be
+  indistinguishable from a repository named `init`. If `ghnew clone <url>` or
   `ghnew delete <repo>` ever ships, it goes in a new entrypoint, not by
   rewriting this CLI's positional handling.
 - **A logger library** (pino, winston, debug, etc.). The two output helpers

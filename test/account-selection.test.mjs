@@ -289,3 +289,65 @@ test('environment token alone is a named-account error, not "not logged in"', ()
   assert.equal(err.error.code, 'E_AUTH');
   assert.match(err.error.message, /GH_TOKEN/, 'points at the environment token, not `gh auth login` alone');
 });
+
+// ── shell integration ────────────────────────────────────────────────────────
+//
+// ghnew used to hand back a `cd "…"` box and a clipboard prompt, which was a
+// workaround for not being able to move the shell. It emits a function now, the
+// same as ghqcd / gwqcd / gwqpull / gwqadd. A syntax check is not enough here:
+// the first version of this in the sibling tools captured --help and fed it to
+// `cd`, and `zsh -n` was perfectly happy with that.
+
+const BIN_PATH = new URL('../bin/ghnew.mjs', import.meta.url).pathname;
+
+function initFor(shell) {
+  return spawnSync(process.execPath, [BIN_PATH, '--init', shell], {
+    encoding: 'utf8', env: { ...process.env, NO_COLOR: '1' },
+  });
+}
+
+for (const shell of ['zsh', 'bash', 'fish']) {
+  test(`--init ${shell} emits a function with the three-step resolver`, () => {
+    const r = initFor(shell);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /ghnew/);
+    assert.match(r.stdout, /--quiet/, 'the function must use the path channel');
+    assert.match(r.stdout, /npx -y/, 'npx is the last-resort fallback');
+    assert.ok(r.stdout.includes(BIN_PATH), 'the generating script is baked in');
+  });
+
+  test(`the ${shell} function passes --version and --help through`, (t) => {
+    if (spawnSync(shell, ['-c', 'true'], { stdio: 'ignore' }).error) return t.skip(`${shell} missing`);
+    for (const flag of ['--version', '--help']) {
+      const r = spawnSync(shell, ['-c', `${initFor(shell).stdout}\nghnew ${flag}`], { encoding: 'utf8' });
+      assert.equal(r.status, 0, `${flag}: ${r.stderr}`);
+      assert.doesNotMatch(r.stderr, /cd:|file name too long|no such file/,
+        `${flag} must not be captured and handed to cd`);
+    }
+  });
+}
+
+test('--init rejects an unknown shell', () => {
+  const r = initFor('tcsh');
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /zsh \| bash \| fish/);
+});
+
+test('--cmd without --init is a validation error', () => {
+  const r = spawnSync(process.execPath, [BIN_PATH, '--cmd', 'gn'], {
+    encoding: 'utf8', env: { ...process.env, NO_COLOR: '1' },
+  });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /only meaningful together with --init/);
+});
+
+test('--quiet no longer forbids prompting — only --json and a missing TTY do', () => {
+  // It used to, and that made the shell integration impossible: `ghnew --quiet
+  // foo` on a machine with several gh accounts died instead of asking. The
+  // prompts write to stderr, so they never threatened the stdout contract.
+  const src = readFileSync(BIN_PATH, 'utf8');
+  assert.match(src, /const explicitNonInteractive = isJson;/,
+    'isQuiet must not be an explicit non-interactive trigger');
+  assert.match(src, /explicitNonInteractive \|\| fullySpecified \|\| !stdinTTY/,
+    'no TTY must still forbid prompting');
+});

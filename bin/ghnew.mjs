@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { parseArgs } from 'node:util';
 import { Buffer } from 'node:buffer';
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { input, select, confirm } from '@inquirer/prompts';
 
 // Read from package.json rather than a hand-maintained constant: `npm version`
@@ -12,6 +13,8 @@ const VERSION = JSON.parse(
   readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
 ).version;
 const SCHEMA_VERSION = 1;
+const PKG = 'ghnew';
+const SELF = fileURLToPath(import.meta.url);
 
 const HELP = `ghnew ${VERSION} — create a GitHub repo, ghq-get it, offer to copy the cd command.
 
@@ -25,8 +28,10 @@ OPTIONS
   --public                 create a public repo (default: private)
   --internal               create an internal repo (org-only)
   --description <text>     repo description (last --description wins)
+  --init <shell>           print shell integration for zsh | bash | fish
+  --cmd <name>             function name emitted by --init (default: ghnew)
   --json                   stdout = 1-line JSON, no prompts, no keypress
-  --quiet                  stdout = path only, no prompts, no keypress
+  --quiet                  stdout = path only (what the shell function uses)
   --no-copy-prompt         skip the "press c to copy" phase
   --no-color               disable ANSI colors (also respects NO_COLOR env)
   -h, --help               show this help
@@ -39,6 +44,15 @@ EXAMPLES
   ghnew --json --remote github.com/alice my-app      machine-readable
   ghnew --quiet --remote github.com/alice my-app     path only
   ghnew --public --description "A demo" my-tool      visibility + description
+
+SHELL INTEGRATION
+  A child process cannot change its parent shell's directory, so ghnew can only
+  *print* where the new repo landed. Add this to ~/.zshrc and it moves the shell
+  for you instead, exactly like ghqcd / gwqcd / gwqpull / gwqadd:
+
+    eval "$(ghnew --init zsh)"
+
+  Without it, ghnew falls back to the copyable box below.
 
 OUTPUT
   Default mode prints progress to stderr and a box with the cd command,
@@ -92,6 +106,8 @@ try {
       host: { type: 'string' },
       account: { type: 'string' },
       remote: { type: 'string' },
+      init: { type: 'string' },
+      cmd: { type: 'string' },
       json: { type: 'boolean' },
       quiet: { type: 'boolean' },
       'no-copy-prompt': { type: 'boolean' },
@@ -135,8 +151,12 @@ const isQuiet = !!values.quiet;
 const isPretty = !isJson && !isQuiet;
 
 const stderr = process.stderr;
+// --quiet narrows *stdout* to the path; it does not gag the tool. Creating a
+// repo and cloning it takes seconds, and the shell function runs in --quiet
+// mode, so silence there would read as a hang. Only --json, whose contract is
+// one line, goes quiet. This matches ghqcd / gwqcd / gwqpull / gwqadd.
 const log = (s) => {
-  if (isJson || isQuiet) return;
+  if (isJson) return;
   stderr.write(s + '\n');
 };
 const logErr = (s) => stderr.write(s + '\n');
@@ -166,6 +186,163 @@ function die(code, message) {
   process.exit(exitCode);
 }
 
+// ── shell integration (--init) ───────────────────────────────────────────────
+
+const SHELLS = ['zsh', 'bash', 'fish'];
+
+// Single-quote for POSIX shells: close, escape, reopen.
+const shq = (v) => `'${String(v).replaceAll("'", `'\\''`)}'`;
+// fish single-quotes only treat \ and ' as special.
+const fishq = (v) => `'${String(v).replaceAll('\\', '\\\\').replaceAll("'", "\\'")}'`;
+
+// Same three-step resolution as the sibling tools: PATH first so a global
+// install wins and picks up upgrades, then the absolute path of the script that
+// generated the snippet (which is what makes `eval "$(npx -y ghnew --init zsh)"`
+// work at all), then npx — because npm garbage-collects ~/.npm/_npx/<hash>/ and
+// without that step the shell silently loses the command.
+//
+// The lookup must be PATH-only (`whence -p` / `type -P` / `command -s`): the
+// function shares its name with the binary, and a function-aware lookup would
+// find the function and recurse until the shell dies.
+function shellInit(shell, fnName) {
+  const desc = 'Create a GitHub repo, ghq-get it, and cd there';
+  const v = `${PKG}@${VERSION}`;
+  const slug = fnName.replaceAll(/[^A-Za-z0-9_]/g, '_');
+  // Flags whose output belongs to the caller, not to cd. --json would also
+  // collide with the --quiet the function adds.
+  const pass = '-h|--help|-V|--version|--init|--init=*|--json';
+
+  if (shell === 'zsh') {
+    return `# ${PKG} ${VERSION} — zsh integration
+# Add to ~/.zshrc:  eval "$(${PKG} --init zsh)"
+
+__${slug}_fallback=${shq(SELF)}
+
+__${slug}_exec() {
+  local __bin
+  __bin=$(whence -p ${PKG} 2>/dev/null)
+  if [[ -n $__bin ]]; then
+    "$__bin" "$@"
+  elif [[ -x $__${slug}_fallback ]]; then
+    "$__${slug}_fallback" "$@"
+  else
+    npx -y ${shq(v)} "$@"
+  fi
+}
+
+# ${desc}.
+${fnName}() {
+  emulate -L zsh
+  local __a
+  for __a in "$@"; do
+    case $__a in
+      ${pass})
+        __${slug}_exec "$@"
+        return $?
+        ;;
+    esac
+  done
+  local __dir
+  __dir=$(__${slug}_exec --quiet "$@") || return $?
+  [[ -n $__dir ]] || return 0
+  builtin cd -- "$__dir"
+}
+`;
+  }
+
+  if (shell === 'bash') {
+    return `# ${PKG} ${VERSION} — bash integration
+# Add to ~/.bashrc:  eval "$(${PKG} --init bash)"
+
+__${slug}_fallback=${shq(SELF)}
+
+__${slug}_exec() {
+  local __bin
+  __bin=$(type -P ${PKG} 2>/dev/null)
+  if [ -n "$__bin" ]; then
+    "$__bin" "$@"
+  elif [ -x "$__${slug}_fallback" ]; then
+    "$__${slug}_fallback" "$@"
+  else
+    npx -y ${shq(v)} "$@"
+  fi
+}
+
+# ${desc}.
+${fnName}() {
+  local __a
+  for __a in "$@"; do
+    case "$__a" in
+      ${pass})
+        __${slug}_exec "$@"
+        return $?
+        ;;
+    esac
+  done
+  local __dir
+  __dir=$(__${slug}_exec --quiet "$@") || return $?
+  [ -n "$__dir" ] || return 0
+  cd -- "$__dir"
+}
+`;
+  }
+
+  if (shell === 'fish') {
+    return `# ${PKG} ${VERSION} — fish integration
+# Add to ~/.config/fish/config.fish:  ${PKG} --init fish | source
+
+set -g __${slug}_fallback ${fishq(SELF)}
+
+function __${slug}_exec
+    set -l __bin (command -s ${PKG})
+    if test -n "$__bin"
+        $__bin $argv
+    else if test -x "$__${slug}_fallback"
+        $__${slug}_fallback $argv
+    else
+        npx -y ${fishq(v)} $argv
+    end
+end
+
+function ${fnName} --description ${fishq(desc)}
+    for __a in $argv
+        switch $__a
+            case -h --help -V --version --init '--init=*' --json
+                __${slug}_exec $argv
+                return $status
+        end
+    end
+    set -l __dir (__${slug}_exec --quiet $argv)
+    # \`set\` reports the command substitution's status, but not every fish
+    # release agrees on that. Capturing it keeps a failed run from cd'ing, and
+    # the empty-string guard below is correct either way.
+    set -l __st $status
+    if test $__st -ne 0
+        return $__st
+    end
+    if test -z "$__dir"
+        return 0
+    end
+    cd -- $__dir
+end
+`;
+  }
+
+  return null;
+}
+
+if (values.init != null) {
+  if (!SHELLS.includes(values.init)) {
+    emitEarlyError(`--init expects one of ${SHELLS.join(' | ')}, got '${values.init}'`);
+  }
+  const fnName = values.cmd ?? PKG;
+  if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(fnName)) {
+    emitEarlyError(`--cmd must be a valid shell function name, got '${fnName}'`);
+  }
+  process.stdout.write(shellInit(values.init, fnName));
+  process.exit(0);
+}
+
 // ── argument validation ──────────────────────────────────────────────────────
 
 if (values.remote) {
@@ -179,6 +356,10 @@ if (values.remote) {
   }
   values.host ??= m[1];
   values.account ??= m[2];
+}
+
+if (values.cmd != null) {
+  die('E_VALIDATION', '--cmd is only meaningful together with --init');
 }
 
 if (values.public && values.internal) {
@@ -207,7 +388,13 @@ if ((values.json || values.quiet) && !argName) {
 const stdinTTY = !!process.stdin.isTTY;
 const stderrTTY = !!process.stderr.isTTY;
 const stdoutTTY = !!process.stdout.isTTY;
-const explicitNonInteractive = isJson || isQuiet;
+// --quiet is deliberately NOT here. It used to be, and that made the shell
+// integration impossible: `ghnew --quiet foo` on a machine with more than one
+// gh account died with "multiple authenticated accounts; specify --remote"
+// instead of asking. Every prompt already writes to stderr, so prompting costs
+// the stdout contract nothing. --json still forbids prompts, and no TTY still
+// forbids them, which is what actually protects scripts and agents.
+const explicitNonInteractive = isJson;
 const fullySpecified = !!(argName && values.host && values.account);
 const isNonInteractive =
   explicitNonInteractive || fullySpecified || !stdinTTY;
@@ -572,7 +759,7 @@ async function main() {
   if (values.description) createArgs.push('--description', values.description);
   const createRes = spawnSync('gh', createArgs, {
     env: childEnv,
-    stdio: isPretty ? ['inherit', 2, 'inherit'] : ['inherit', 'ignore', 'ignore'],
+    stdio: isJson ? ['inherit', 'ignore', 'ignore'] : ['inherit', 2, 'inherit'],
   });
   if (createRes.signal === 'SIGINT') process.exit(130);
   if (createRes.status !== 0) {
@@ -597,7 +784,7 @@ async function main() {
     // Same env: over HTTPS git shells out to `gh auth git-credential`, which
     // would otherwise authenticate as the host's active account.
     env: childEnv,
-    stdio: isPretty ? ['inherit', 2, 'inherit'] : ['inherit', 'ignore', 'ignore'],
+    stdio: isJson ? ['inherit', 'ignore', 'ignore'] : ['inherit', 2, 'inherit'],
   });
   if (getRes.signal === 'SIGINT') process.exit(130);
   if (getRes.status !== 0) die('E_GHQ_GET', `ghq get failed for ${cloneUrl}`);

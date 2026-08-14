@@ -51,11 +51,40 @@ not logged into `gh`, it offers to launch `gh auth login`.
 npm i -g ghnew
 ```
 
+Then add the shell integration, so ghnew moves your shell instead of printing a
+command to paste:
+
+```sh
+# zsh  — ~/.zshrc
+eval "$(ghnew --init zsh)"
+
+# bash — ~/.bashrc
+eval "$(ghnew --init bash)"
+
+# fish — ~/.config/fish/config.fish
+ghnew --init fish | source
+```
+
 Or run without installing (slower on first run because npx cold-starts):
 
 ```sh
 npx --yes ghnew my-new-app
+eval "$(npx -y ghnew --init zsh)"     # integration, without a global install
 ```
+
+### Why the extra line
+
+A child process cannot change its parent shell's working directory, so `ghnew`
+on its own can only *tell* you where the repo landed — which it does, in a
+copyable box with `c` to copy. `--init` emits a shell *function*, and a function
+runs inside your shell, so it can `cd`. Same mechanism as
+[zoxide](https://github.com/ajeetdsouza/zoxide), and the same one used by
+[`ghqcd`](https://github.com/ryoshin0830/ghqcd),
+[`gwqcd`](https://github.com/ryoshin0830/gwqcd),
+[`gwqpull`](https://github.com/ryoshin0830/gwqpull) and
+[`gwqadd`](https://github.com/ryoshin0830/gwqadd).
+
+The box is still there when you run `npx ghnew` without the integration.
 
 ## Use
 
