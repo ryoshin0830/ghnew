@@ -222,33 +222,43 @@ gh's own stderr still passes through untouched (I4).
 ## Release workflow
 
 ```sh
-# 1. Make changes, commit them.
 git add -A && git commit -m "feat: …"
-
-# 2. Verify the tarball contents (must not include .claude/, CLAUDE.md, .git, node_modules):
-npm pack --dry-run
-
-# 3. Bump version (also tags and commits):
-npm version patch     # 0.x.y → 0.x.(y+1)   bug fix
-npm version minor     # 0.x.y → 0.(x+1).0   feature
-npm version major     # only meaningful from 1.0.0 onwards
-
-# `bin/ghnew.mjs` reads its version from package.json, so this is the only
-# place a release number lives. Never reintroduce a `const VERSION = '…'`
-# literal: `npm version` doesn't touch the source, so it silently drifts and
-# `--version` then names a build the user isn't running.
-
-# 4. Push commit + tag, then publish:
-git push --follow-tags
-npm publish           # prompts for passkey/OTP via the npm web auth flow
-
-# 5. Verify:
-npm view ghnew version
+npm pack --dry-run          # must not contain .claude/, CLAUDE.md, test/, .git/
+npm version patch           # or minor / major — commits and tags
+git push --follow-tags      # pushing main fires .github/workflows/publish.yml
+gh run watch                # optional; the publish happens in CI
 npx -y ghnew@latest --version
 ```
 
-The `prepublishOnly` script runs `npm pack --dry-run && node bin/ghnew.mjs --help`
-to catch broken shebangs and missing files before they hit the registry.
+`bin/ghnew.mjs` reads its version from `package.json`, so that field is the
+only place a release number lives. Never reintroduce a `const VERSION = '…'`
+literal: nothing bumps it when `npm version` runs, and `--version` then names
+a build nobody is running.
+
+**Do not run `npm publish` by hand.** **Every push to main releases.** CI runs
+the suite, then publishes whatever `package.json` says — raising patch itself,
+and committing that bump back to main, when the version there has already
+shipped. Bump manually first (`npm version minor`) to choose a number; forget,
+and you still shipped at +patch. Re-run a failure with
+`gh workflow run publish.yml` — there is nothing to undo and no tag to move.
+
+Because every push releases, treat main as the publish button: docs fixes and
+test tweaks land as real versions. That is deliberate.
+
+Commit-message footgun: GitHub reads **every line** of a push's HEAD message,
+not just the subject, and skips the whole event when any of them carries a CI
+skip token. Never write the token in prose; say "the skip token" instead. The
+bot's own releases use it legitimately, which is why they never fan out.
+
+CI publishes with npm trusted publishing (OIDC): no npm token exists on any
+laptop or in this repository's secrets, and no release needs a browser or a
+passkey. One-time setup per package, on npmjs.com → the package → Settings →
+Trusted Publisher: GitHub Actions, owner `ryoshin0830`, repository `ghnew`,
+workflow filename `publish.yml`, allowed action `npm publish`.
+
+The developer machine's `.npmrc` points `registry=` at a private mirror, so
+anything run locally against npmjs.org needs
+`--registry=https://registry.npmjs.org`. CI has no such mirror.
 
 ---
 
