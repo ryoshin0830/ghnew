@@ -65,8 +65,11 @@ jobs:
           # fish lives in universe; it is the one the suite can afford to skip.
           sudo apt-get install -y fish || echo "fish unavailable — its --init test will skip"
 
-      # No `npm ci`: this package has zero dependencies (I12) and deliberately
-      # carries no lockfile, so there is nothing to install.
+      # The one sibling with a runtime dependency (@inquirer/prompts, I9's
+      # stated exception) and the lockfile that pins it. `npm test` spawns
+      # bin/ghnew.mjs, which imports it.
+      - run: npm ci
+
       - run: npm test
 
       # prepublishOnly runs the suite again plus `npm pack --dry-run` and
